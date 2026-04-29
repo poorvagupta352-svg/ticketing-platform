@@ -29,25 +29,61 @@ export type PriceBreakdown = {
   finalPrice: number;
 };
 
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 const apiBaseUrl =
   process.env.API_BASE_URL ?? process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
+const REQUEST_TIMEOUT_MS = 8000;
+const MAX_RETRIES = 1;
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`API ${path} failed: ${response.status} ${text}`);
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let attempt = 0;
+  let lastError: unknown;
+
+  while (attempt <= MAX_RETRIES) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        ...init,
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new ApiError(response.status, `API ${path} failed: ${response.status} ${text}`);
+      }
+
+      return (await response.json()) as T;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= MAX_RETRIES) break;
+      await sleep(250);
+      attempt += 1;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
-  return (await response.json()) as T;
+  throw lastError instanceof Error ? lastError : new Error(`API ${path} failed unexpectedly`);
 }
 
 export function getEvents(): Promise<EventItem[]> {

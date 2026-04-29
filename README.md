@@ -52,6 +52,7 @@ The API starts at `http://localhost:3001` and Next.js starts at `http://localhos
 - `TIME_RULE_WEIGHT`: optional pricing weight (default `1`)
 - `DEMAND_RULE_WEIGHT`: optional pricing weight (default `1`)
 - `INVENTORY_RULE_WEIGHT`: optional pricing weight (default `1`)
+- `DATABASE_URL_TEST`: optional test database URL (used when `NODE_ENV=test`)
 
 ### `packages/database/.env`
 
@@ -70,6 +71,34 @@ Run pricing coverage report:
 ```bash
 pnpm --filter api test:coverage
 ```
+
+Recommended test isolation (so tests never wipe your dev data):
+
+```bash
+# Create a separate DB once
+sudo -u postgres psql -c "CREATE DATABASE ticketing_test_db OWNER ticketing_user;"
+
+# Run tests against test DB
+DATABASE_URL_TEST="postgresql://ticketing_user:ticketing_pass@localhost:5432/ticketing_test_db" pnpm --filter api test
+DATABASE_URL_TEST="postgresql://ticketing_user:ticketing_pass@localhost:5432/ticketing_test_db" pnpm --filter api test:coverage
+```
+
+## Final Verification Checklist
+
+```bash
+pnpm --filter api test
+pnpm --filter api test:coverage
+pnpm --filter web check-types
+pnpm --filter @repo/database db:push
+pnpm --filter @repo/database db:seed
+pnpm dev
+```
+
+Before pushing:
+
+- confirm `.env` files are not committed
+- keep `.env.example` files committed
+- ensure `README.md` and `DESIGN.md` are updated
 
 ## What You're Building
 

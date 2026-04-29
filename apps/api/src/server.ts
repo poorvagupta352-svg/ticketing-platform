@@ -5,7 +5,7 @@ import express from "express";
 import cors from "cors";
 import { z } from "zod";
 import { bookings, client, db, events } from "@repo/database";
-import type { Express } from "express";
+import type { Express, NextFunction, Request, Response } from "express";
 
 import { calculatePrice } from "./pricing";
 
@@ -35,6 +35,23 @@ const createBookingSchema = z.object({
   quantity: z.number().int().positive().max(10),
 });
 
+class AppError extends Error {
+  statusCode: number;
+
+  constructor(statusCode: number, message: string) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+type AsyncHandler = (req: Request, res: Response, next: NextFunction) => Promise<void>;
+
+function asyncHandler(handler: AsyncHandler) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    void handler(req, res, next).catch(next);
+  };
+}
+
 export function createApp(): Express {
   const app = express();
   app.use(cors());
@@ -44,15 +61,20 @@ export function createApp(): Express {
     res.json({ ok: true });
   });
 
-  app.get("/events", async (_req, res) => {
+  app.get(
+    "/events",
+    asyncHandler(async (_req, res) => {
     const rows = await db.select().from(events).orderBy(events.date);
     res.json(rows);
-  });
+    })
+  );
 
-  app.get("/events/:id", async (req, res) => {
+  app.get(
+    "/events/:id",
+    asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const [event] = await db.select().from(events).where(eq(events.id, id));
-    if (!event) return res.status(404).json({ message: "Event not found" });
+      if (!event) throw new AppError(404, "Event not found");
 
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const recentBookings = await db
@@ -72,16 +94,19 @@ export function createApp(): Express {
     });
 
     res.json({ event, breakdown });
-  });
+    })
+  );
 
-  app.post("/events", async (req, res) => {
+  app.post(
+    "/events",
+    asyncHandler(async (req, res) => {
     if (req.header("x-api-key") !== adminApiKey) {
-      return res.status(401).json({ message: "Unauthorized" });
+        throw new AppError(401, "Unauthorized");
     }
 
     const parsed = createEventSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: parsed.error.flatten() });
+        throw new AppError(400, JSON.stringify(parsed.error.flatten()));
     }
 
     const payload = parsed.data;
@@ -104,17 +129,19 @@ export function createApp(): Express {
       .returning();
 
     res.status(201).json(inserted);
-  });
+    })
+  );
 
-  app.post("/bookings", async (req, res) => {
+  app.post(
+    "/bookings",
+    asyncHandler(async (req, res) => {
     const parsed = createBookingSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ message: parsed.error.flatten() });
+        throw new AppError(400, JSON.stringify(parsed.error.flatten()));
     }
 
     const { eventId, userEmail, quantity } = parsed.data;
 
-    try {
       const result = await client.begin(async (tx) => {
         const locked = await tx<
           Array<{
@@ -134,10 +161,10 @@ export function createApp(): Express {
       `;
 
         const event = locked[0];
-        if (!event) throw new Error("EVENT_NOT_FOUND");
+        if (!event) throw new AppError(404, "Event not found");
 
         const remaining = event.total_tickets - event.booked_tickets;
-        if (remaining < quantity) throw new Error("INSUFFICIENT_TICKETS");
+        if (remaining < quantity) throw new AppError(409, "Not enough tickets available");
 
         const recent = await tx<Array<{ count: string }>>`
         SELECT COUNT(*)::text as count
@@ -180,21 +207,15 @@ export function createApp(): Express {
       });
 
       res.status(201).json(result);
-    } catch (error) {
-      if (error instanceof Error && error.message === "EVENT_NOT_FOUND") {
-        return res.status(404).json({ message: "Event not found" });
-      }
-      if (error instanceof Error && error.message === "INSUFFICIENT_TICKETS") {
-        return res.status(409).json({ message: "Not enough tickets available" });
-      }
-      return res.status(500).json({ message: "Booking failed", error });
-    }
-  });
+    })
+  );
 
-  app.get("/bookings", async (req, res) => {
+  app.get(
+    "/bookings",
+    asyncHandler(async (req, res) => {
     const eventId = Number(req.query.eventId);
     if (!Number.isFinite(eventId)) {
-      return res.status(400).json({ message: "eventId query is required" });
+        throw new AppError(400, "eventId query is required");
     }
 
     const rows = await db
@@ -203,13 +224,16 @@ export function createApp(): Express {
       .where(eq(bookings.eventId, eventId))
       .orderBy(desc(bookings.bookedAt));
     res.json(rows);
-  });
+    })
+  );
 
-  app.get("/analytics/events/:id", async (req, res) => {
+  app.get(
+    "/analytics/events/:id",
+    asyncHandler(async (req, res) => {
     const eventId = Number(req.params.id);
 
     const [event] = await db.select().from(events).where(eq(events.id, eventId));
-    if (!event) return res.status(404).json({ message: "Event not found" });
+      if (!event) throw new AppError(404, "Event not found");
 
     const [metrics] = await db
       .select({
@@ -227,9 +251,12 @@ export function createApp(): Express {
       averagePrice: Number(metrics?.averagePrice ?? 0),
       remaining: event.totalTickets - event.bookedTickets,
     });
-  });
+    })
+  );
 
-  app.get("/analytics/summary", async (_req, res) => {
+  app.get(
+    "/analytics/summary",
+    asyncHandler(async (_req, res) => {
     const [summary] = await db
       .select({
         totalBookings: sql<number>`COUNT(${bookings.id})`,
@@ -244,9 +271,12 @@ export function createApp(): Express {
       totalRevenue: Number(summary?.totalRevenue ?? 0),
       eventsCount: Number(summary?.eventsCount ?? 0),
     });
-  });
+    })
+  );
 
-  app.post("/seed", async (_req, res) => {
+  app.post(
+    "/seed",
+    asyncHandler(async (_req, res) => {
     await db.delete(bookings);
     await db.delete(events);
 
@@ -274,6 +304,20 @@ export function createApp(): Express {
       .returning();
 
     res.status(201).json({ event: seeded });
+    })
+  );
+
+  app.use((_req, _res, next) => {
+    next(new AppError(404, "Route not found"));
+  });
+
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ message: error.message });
+    }
+
+    console.error("Unhandled error:", error);
+    return res.status(500).json({ message: "Internal server error" });
   });
 
   return app;

@@ -1,8 +1,9 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 
 import { createBookingAction } from "./actions";
 import PricePoll from "./price-poll";
-import { formatDate, formatMoney, getEventWithBreakdown } from "../../../lib/api";
+import { ApiError, formatDate, formatMoney, getEventWithBreakdown } from "../../../lib/api";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -21,7 +22,17 @@ export default async function EventDetailsPage({ params, searchParams }: Props) 
   const eventId = Number(id);
   const query = await searchParams;
 
-  const { event, breakdown } = await getEventWithBreakdown(eventId);
+  let eventData: Awaited<ReturnType<typeof getEventWithBreakdown>>;
+  try {
+    eventData = await getEventWithBreakdown(eventId);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      notFound();
+    }
+    throw error;
+  }
+
+  const { event, breakdown } = eventData;
   const remaining = event.totalTickets - event.bookedTickets;
   const errorText = getErrorText(query.error);
 
